@@ -3,10 +3,10 @@
 /*
 
 An implementation of ERC4626, a standardization of minting, burning, and redeeming a token
-for other assets. 
+for other assets.
 
-Since this is an ink! smart contract, the complete implementation isn't available for your 
-specific parachain, as you may require specific pallets to work with specific assets. 
+Since this is an ink! smart contract, the complete implementation isn't available for your
+specific parachain, as you may require specific pallets to work with specific assets.
 Please look for @dev tags to see where manual implementation is necessary.
 
 This smart contract was written and based off of the ERC20 smart contract provided by the
@@ -54,6 +54,14 @@ mod erc4626 {
         value: Balance,
     }
 
+    #[ink(event)]
+    pub struct Deposit {
+        sender: AccountId,
+        owner: AccountId,
+        assets: Balance,
+        shares: Balance,
+    }
+
     /// The ERC-20 error types.
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
@@ -63,7 +71,9 @@ mod erc4626 {
         /// Returned if not enough allowance to fulfill a request is available.
         InsufficientAllowance,
         /// Returned when making a deposit, and the deposit is too high.
-        ExceededMaxDeposit
+        ExceededMaxDeposit,
+        /// Returned when minting, and the mint is too high.
+        ExceededMaxMint,
     }
 
     /// The ERC-20 result type.
@@ -91,7 +101,7 @@ mod erc4626 {
 
         // region: Read Only
 
-        // @dev Replace with the address/multilocation of the underlying token 
+        // @dev Replace with the address/multilocation of the underlying token
         // used for the vault for accounting, depositing, withdrawing.
         #[ink(message)]
         pub fn asset(&self) {
@@ -104,18 +114,67 @@ mod erc4626 {
             todo!();
         }
 
-        /// Returns the amount of shares that would be exchanged by the vault for the 
+        /// Returns the amount of shares that would be exchanged by the vault for the
         /// amount of assets provided.
         #[ink(message)]
         pub fn convert_to_shares(&self, assets: Balance) -> Balance {
             assets * 10_u128.pow(self.decimal_offset().into())
         }
 
-        /// returns the amount of assets that would be exchanged by the vault for the 
+        /// returns the amount of assets that would be exchanged by the vault for the
         /// amount of shares provided.
         #[ink(message)]
         pub fn convert_to_assets(&self, shares: Balance) -> Balance {
             shares as u128 / 10_u128.pow(self.decimal_offset().into())
+        }
+
+        /// The maximum amount of underlying assets that can be deposited in a single
+        /// deposit call by the receiver.
+        #[ink(message)]
+        pub fn max_deposit(&self, _depositor: AccountId) -> Balance {
+            // @dev You can change this function to change the maximum amount that
+            // can be deposited at a time
+            Balance::from(u128::MAX)
+        }
+
+        /// Allows users to simulate the effects of their deposit at the current block.
+        #[ink(message)]
+        pub fn preview_deposit(&self, assets: Balance) -> Balance {
+            self.convert_to_shares(assets)
+        }
+
+        /// Returns the maximum amount of shares that can be minted in a single mint
+        /// call by the receiver.
+        #[ink(message)]
+        pub fn max_mint(&self, _receiver: AccountId) -> Balance {
+            // @dev You can change this function to change the maximum amount of shares
+            // that can be minted at a time
+            Balance::from(u128::MAX)
+        }
+
+        /// Returns the maximum amount of shares that can be minted in a single mint 
+        /// call by the receiver.
+        #[ink(message)]
+        pub fn preview_mint(&self, shares: Balance) -> Balance {
+            self.convert_to_assets(shares)
+        }
+
+        /// Mints exactly shares vault shares to receiver by depositing assets of 
+        /// underlying tokens.
+        #[ink(message)]
+        pub fn max_withdraw(&self, _owner: AccountId) -> Balance {
+            // @dev You can change this function to change the maximum amount of assets
+            // that can be withdrawn at a time
+            Balance::from(u128::MAX)
+        }
+
+        /// Mints exactly shares vault shares to receiver by depositing assets of 
+        /// underlying tokens.
+        #[ink(message)]
+        pub fn preview_withdraw(&self, assets: Balance) -> Balance {
+            // @dev You can change this function to change the maximum amount of assets
+            // that can be withdrawn at a time
+            self.convert_to_shares(assets)
         }
 
         /// Returns the total token supply.
@@ -150,13 +209,6 @@ mod erc4626 {
             self.allowance_impl(&owner, &spender)
         }
 
-        #[ink(message)]
-        pub fn max_deposit(&self, _depositor: AccountId) -> Balance {
-            // @dev You can change this function to change the maximum amount that
-            // can be deposited at a time
-            return Balance::from(u128::MAX);
-        }
-
         // endregion
 
         // region: Inlines
@@ -188,6 +240,48 @@ mod erc4626 {
         }
 
         // endregion
+
+        /// Deposits assets of underlying tokens into the vault and grants ownership of shares to receiver.
+        #[ink(message)]
+        pub fn deposit(&mut self, assets: Balance, receiver: AccountId) -> Result<()> {
+            if assets > self.max_deposit(self.env().caller()) {
+                return Err(Error::ExceededMaxDeposit);
+            }
+
+            let shares = self.preview_deposit(assets);
+
+            // @dev Must make the asset you are storing transfer tokens from A to B
+            // TODO: mint(receiver, shares);
+
+            self.env().emit_event(Deposit {
+                sender: self.env().caller(),
+                owner: receiver,
+                assets,
+                shares,
+            });
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn mint(&mut self, shares: Balance, receiver: AccountId) -> Result<()> {
+            if shares > self.max_mint(receiver) {
+                return Err(Error::ExceededMaxMint);
+            }
+
+            let assets = self.preview_mint(shares);
+
+            // @dev Must make the asset you are storing transfer tokens from A to B
+            // TODO: mint(receiver, shares);
+
+            self.env().emit_event(Deposit {
+                sender: self.env().caller(),
+                owner: receiver,
+                assets,
+                shares,
+            });   
+            Ok(())     
+        }
 
         /// Transfers `value` amount of tokens from the caller's account to account `to`.
         ///
@@ -246,7 +340,7 @@ mod erc4626 {
             let caller = self.env().caller();
             let allowance = self.allowance_impl(&from, &caller);
             if allowance < value {
-                return Err(Error::InsufficientAllowance)
+                return Err(Error::InsufficientAllowance);
             }
             self.transfer_from_to(&from, &to, value)?;
             self.allowances
@@ -270,7 +364,7 @@ mod erc4626 {
         ) -> Result<()> {
             let from_balance = self.balance_of_impl(from);
             if from_balance < value {
-                return Err(Error::InsufficientBalance)
+                return Err(Error::InsufficientBalance);
             }
 
             self.balances.insert(from, &(from_balance - value));
@@ -283,27 +377,13 @@ mod erc4626 {
             });
             Ok(())
         }
-
-        #[ink(message)]
-        pub fn deposit(&mut self, assets: Balance, receiver: AccountId) -> Result<()> {
-            if assets > self.max_deposit(self.env().caller())  {
-                return Err(Error::ExceededMaxDeposit);
-            }
-
-
-
-            Ok(())
-        }
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
 
-        use ink::primitives::{
-            Clear,
-            Hash,
-        };
+        use ink::primitives::{Clear, Hash};
 
         type Event = <Erc4626 as ::ink::reflect::ContractEventBase>::Type;
 
@@ -421,8 +501,7 @@ mod erc4626 {
                 Some(AccountId::from([0x01; 32])),
                 100,
             );
-            let accounts =
-                ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
             // Alice owns all the tokens on contract instantiation
             assert_eq!(erc20.balance_of(accounts.alice), 100);
             // Bob does not owns tokens
@@ -446,8 +525,7 @@ mod erc4626 {
             // Constructor works.
             let mut erc20 = Erc4626::new(100, 10);
             // Transfer event triggered during initial construction.
-            let accounts =
-                ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 
             assert_eq!(erc20.balance_of(accounts.bob), 0);
             // Alice transfers 10 tokens to Bob.
@@ -477,8 +555,7 @@ mod erc4626 {
         fn invalid_transfer_should_fail() {
             // Constructor works.
             let mut erc20 = Erc4626::new(100, 10);
-            let accounts =
-                ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 
             assert_eq!(erc20.balance_of(accounts.bob), 0);
 
@@ -513,8 +590,7 @@ mod erc4626 {
             // Constructor works.
             let mut erc20 = Erc4626::new(100, 10);
             // Transfer event triggered during initial construction.
-            let accounts =
-                ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 
             // Bob fails to transfer tokens owned by Alice.
             assert_eq!(
@@ -562,8 +638,7 @@ mod erc4626 {
         #[ink::test]
         fn allowance_must_not_change_on_failed_transfer() {
             let mut erc20 = Erc4626::new(100, 10);
-            let accounts =
-                ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
 
             // Alice approves Bob for token transfers on her behalf.
             let alice_balance = erc20.balance_of(accounts.alice);
@@ -620,11 +695,7 @@ mod erc4626 {
             T: scale::Encode,
         {
             use ink::{
-                env::hash::{
-                    Blake2x256,
-                    CryptoHash,
-                    HashOutput,
-                },
+                env::hash::{Blake2x256, CryptoHash, HashOutput},
                 primitives::Clear,
             };
 
@@ -634,10 +705,9 @@ mod erc4626 {
             let len_encoded = encoded.len();
             if len_encoded <= len_result {
                 result.as_mut()[..len_encoded].copy_from_slice(&encoded);
-                return result
+                return result;
             }
-            let mut hash_output =
-                <<Blake2x256 as HashOutput>::Type as Default>::default();
+            let mut hash_output = <<Blake2x256 as HashOutput>::Type as Default>::default();
             <Blake2x256 as CryptoHash>::hash(&encoded, &mut hash_output);
             let copy_len = core::cmp::min(hash_output.len(), len_result);
             result.as_mut()[0..copy_len].copy_from_slice(&hash_output[0..copy_len]);
@@ -712,14 +782,9 @@ mod erc4626 {
             let charlie_account = ink_e2e::account_id(ink_e2e::AccountKeyring::Charlie);
 
             let amount = 500_000_000u128;
-            let transfer_from =
-                build_message::<Erc20Ref>(contract_acc_id.clone()).call(|erc20| {
-                    erc20.transfer_from(
-                        bob_account.clone(),
-                        charlie_account.clone(),
-                        amount,
-                    )
-                });
+            let transfer_from = build_message::<Erc20Ref>(contract_acc_id.clone()).call(|erc20| {
+                erc20.transfer_from(bob_account.clone(), charlie_account.clone(), amount)
+            });
             let transfer_from_result = client
                 .call(&ink_e2e::charlie(), transfer_from, 0, None)
                 .await;
@@ -739,14 +804,9 @@ mod erc4626 {
                 .expect("approve failed");
 
             // `transfer_from` the approved amount
-            let transfer_from =
-                build_message::<Erc20Ref>(contract_acc_id.clone()).call(|erc20| {
-                    erc20.transfer_from(
-                        bob_account.clone(),
-                        charlie_account.clone(),
-                        approved_value,
-                    )
-                });
+            let transfer_from = build_message::<Erc20Ref>(contract_acc_id.clone()).call(|erc20| {
+                erc20.transfer_from(bob_account.clone(), charlie_account.clone(), approved_value)
+            });
             let transfer_from_result = client
                 .call(&ink_e2e::charlie(), transfer_from, 0, None)
                 .await;
@@ -762,10 +822,8 @@ mod erc4626 {
                 .await;
 
             // `transfer_from` again, this time exceeding the approved amount
-            let transfer_from =
-                build_message::<Erc20Ref>(contract_acc_id.clone()).call(|erc20| {
-                    erc20.transfer_from(bob_account.clone(), charlie_account.clone(), 1)
-                });
+            let transfer_from = build_message::<Erc20Ref>(contract_acc_id.clone())
+                .call(|erc20| erc20.transfer_from(bob_account.clone(), charlie_account.clone(), 1));
             let transfer_from_result = client
                 .call(&ink_e2e::charlie(), transfer_from, 0, None)
                 .await;
