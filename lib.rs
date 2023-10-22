@@ -26,7 +26,7 @@ mod erc4626 {
         total_supply: Balance,
         /// Mapping from owner to number of owned token.
         balances: Mapping<AccountId, Balance>,
-        /// The decimals of the current asset
+        /// The decimals of the asset being represented
         decimals: u8,
         /// Mapping of the token amount which an account is allowed to withdraw
         /// from another account.
@@ -62,6 +62,8 @@ mod erc4626 {
         InsufficientBalance,
         /// Returned if not enough allowance to fulfill a request is available.
         InsufficientAllowance,
+        /// Returned when making a deposit, and the deposit is too high.
+        ExceededMaxDeposit
     }
 
     /// The ERC-20 result type.
@@ -89,6 +91,33 @@ mod erc4626 {
 
         // region: Read Only
 
+        // @dev Replace with the address/multilocation of the underlying token 
+        // used for the vault for accounting, depositing, withdrawing.
+        #[ink(message)]
+        pub fn asset(&self) {
+            todo!();
+        }
+
+        // @dev Replace with the total amount of underlying assets held by the vault.
+        #[ink(message)]
+        pub fn total_assets(&self) {
+            todo!();
+        }
+
+        /// Returns the amount of shares that would be exchanged by the vault for the 
+        /// amount of assets provided.
+        #[ink(message)]
+        pub fn convert_to_shares(&self, assets: Balance) -> Balance {
+            assets * 10_u128.pow(self.decimal_offset().into())
+        }
+
+        /// returns the amount of assets that would be exchanged by the vault for the 
+        /// amount of shares provided.
+        #[ink(message)]
+        pub fn convert_to_assets(&self, shares: Balance) -> Balance {
+            shares as u128 / 10_u128.pow(self.decimal_offset().into())
+        }
+
         /// Returns the total token supply.
         #[ink(message)]
         pub fn total_supply(&self) -> Balance {
@@ -105,7 +134,12 @@ mod erc4626 {
 
         /// Returns the decimals of this ERC20 asset.
         pub fn decimals(&self) -> u8 {
-            self.decimals;
+            self.decimals + self.decimal_offset()
+        }
+
+        /// Returns the decimal offset that this asset represents
+        pub fn decimal_offset(&self) -> u8 {
+            6
         }
 
         /// Returns the amount which `spender` is still allowed to withdraw from `owner`.
@@ -116,7 +150,16 @@ mod erc4626 {
             self.allowance_impl(&owner, &spender)
         }
 
+        #[ink(message)]
+        pub fn max_deposit(&self, _depositor: AccountId) -> Balance {
+            // @dev You can change this function to change the maximum amount that
+            // can be deposited at a time
+            return Balance::from(u128::MAX);
+        }
+
         // endregion
+
+        // region: Inlines
 
         /// Returns the account balance for the specified `owner`.
         ///
@@ -143,6 +186,8 @@ mod erc4626 {
         fn allowance_impl(&self, owner: &AccountId, spender: &AccountId) -> Balance {
             self.allowances.get((owner, spender)).unwrap_or_default()
         }
+
+        // endregion
 
         /// Transfers `value` amount of tokens from the caller's account to account `to`.
         ///
@@ -238,6 +283,17 @@ mod erc4626 {
             });
             Ok(())
         }
+
+        #[ink(message)]
+        pub fn deposit(&mut self, assets: Balance, receiver: AccountId) -> Result<()> {
+            if assets > self.max_deposit(self.env().caller())  {
+                return Err(Error::ExceededMaxDeposit);
+            }
+
+
+
+            Ok(())
+        }
     }
 
     #[cfg(test)]
@@ -304,7 +360,7 @@ mod erc4626 {
         #[ink::test]
         fn new_works() {
             // Constructor works.
-            let _erc20 = Erc4626::new(100, 10, 10);
+            let _erc20 = Erc4626::new(100, 10);
 
             // Transfer event triggered during initial construction.
             let emitted_events = ink::env::test::recorded_events().collect::<Vec<_>>();
@@ -349,7 +405,7 @@ mod erc4626 {
                 100,
             );
             // Get the decimals.
-            assert_eq!(erc20.decimals(), 10);
+            assert_eq!(erc20.decimals(), 16);
         }
 
         /// Get the actual balance of an account.
@@ -371,6 +427,18 @@ mod erc4626 {
             assert_eq!(erc20.balance_of(accounts.alice), 100);
             // Bob does not owns tokens
             assert_eq!(erc20.balance_of(accounts.bob), 0);
+        }
+
+        #[ink::test]
+        fn convert_to_shares_works() {
+            let erc20 = Erc4626::new(100, 10);
+            assert_eq!(erc20.convert_to_shares(10), 10000000);
+        }
+
+        #[ink::test]
+        fn convert_to_assets_works() {
+            let erc20 = Erc4626::new(100, 10);
+            assert_eq!(erc20.convert_to_assets(10000000), 10);
         }
 
         #[ink::test]
