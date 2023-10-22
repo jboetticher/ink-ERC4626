@@ -16,7 +16,7 @@ ink-examples repository.
 
 #[ink::contract]
 mod erc4626 {
-    use ink::storage::Mapping;
+    use ink::{storage::Mapping};
 
     /// A simple ERC-20 contract.
     #[ink(storage)]
@@ -59,7 +59,16 @@ mod erc4626 {
         sender: AccountId,
         owner: AccountId,
         assets: Balance,
-        shares: Balance,
+        shares: Balance
+    }
+
+    #[ink(event)]
+    pub struct Withdraw {
+        sender: AccountId,
+        receiver: AccountId,
+        owner: AccountId,
+        assets: Balance,
+        shares: Balance
     }
 
     /// The ERC-20 error types.
@@ -74,6 +83,10 @@ mod erc4626 {
         ExceededMaxDeposit,
         /// Returned when minting, and the mint is too high.
         ExceededMaxMint,
+        /// Returned when withdrawing, and the withdrawl is too high.
+        ExceededMaxWithdraw,
+        /// Returned when redeeming, and the redeem is too high.
+        ExceededMaxRedeem
     }
 
     /// The ERC-20 result type.
@@ -168,13 +181,29 @@ mod erc4626 {
             Balance::from(u128::MAX)
         }
 
-        /// Mints exactly shares vault shares to receiver by depositing assets of 
-        /// underlying tokens.
+        /// Allows users to simulate the effects of their withdrawal at the current block.
         #[ink(message)]
         pub fn preview_withdraw(&self, assets: Balance) -> Balance {
             // @dev You can change this function to change the maximum amount of assets
             // that can be withdrawn at a time
             self.convert_to_shares(assets)
+        }
+
+        /// Returns the maximum amount of shares that can be redeemed from the owner balance 
+        /// through a redeem call.
+        #[ink(message)]
+        pub fn max_redeem(&self, _owner: AccountId) -> Balance {
+            // @dev You can change this function to change the maximum amount of assets
+            // that can be withdrawn at a time
+            Balance::from(u128::MAX)
+        }
+
+        /// Allows users to simulate the effects of their redemption at the current block.
+        #[ink(message)]
+        pub fn preview_redeem(&self, shares: Balance) -> Balance {
+            // @dev You can change this function to change the maximum amount of assets
+            // that can be withdrawn at a time
+            self.convert_to_shares(shares)
         }
 
         /// Returns the total token supply.
@@ -198,7 +227,7 @@ mod erc4626 {
 
         /// Returns the decimal offset that this asset represents
         pub fn decimal_offset(&self) -> u8 {
-            6
+            0
         }
 
         /// Returns the amount which `spender` is still allowed to withdraw from `owner`.
@@ -281,6 +310,20 @@ mod erc4626 {
                 shares,
             });   
             Ok(())     
+        }
+
+        /// Burns shares from owner and send exactly assets token from the vault to receiver.
+        #[ink(message)]
+        pub fn withdraw(&mut self, assets: Balance, receiver: AccountId, owner: AccountId) -> Result<()> {
+            if assets > self.max_deposit(owner) {
+                return Err(Error::ExceededMaxWithdraw)
+            }
+
+            let shares = self.preview_withdraw(assets);
+            
+            // TODO: implement withdraw
+
+            Ok(())
         }
 
         /// Transfers `value` amount of tokens from the caller's account to account `to`.
@@ -485,7 +528,7 @@ mod erc4626 {
                 100,
             );
             // Get the decimals.
-            assert_eq!(erc20.decimals(), 16);
+            assert_eq!(erc20.decimals(), 10);
         }
 
         /// Get the actual balance of an account.
@@ -511,13 +554,13 @@ mod erc4626 {
         #[ink::test]
         fn convert_to_shares_works() {
             let erc20 = Erc4626::new(100, 10);
-            assert_eq!(erc20.convert_to_shares(10), 10000000);
+            assert_eq!(erc20.convert_to_shares(100), 100);
         }
 
         #[ink::test]
         fn convert_to_assets_works() {
             let erc20 = Erc4626::new(100, 10);
-            assert_eq!(erc20.convert_to_assets(10000000), 10);
+            assert_eq!(erc20.convert_to_assets(100), 100);
         }
 
         #[ink::test]
