@@ -15,13 +15,15 @@ ink-examples repository.
 */
 
 #[ink::contract]
-mod erc4626 {
+mod erc4626_20 {
     use ink::storage::Mapping;
+    use erc20::Erc20Ref;
 
     /// A simple ERC-20 contract.
     #[ink(storage)]
     #[derive(Default)]
     pub struct Erc4626 {
+        vault_token: Erc20Ref,
         /// Total token supply.
         total_supply: Balance,
         /// Mapping from owner to number of owned token.
@@ -153,6 +155,7 @@ mod erc4626 {
         /// Allows users to simulate the effects of their deposit at the current block.
         #[ink(message)]
         pub fn preview_deposit(&self, assets: Balance) -> Balance {
+            // @dev You can change this function to change the calculation of depositing
             self.convert_to_shares(assets)
         }
 
@@ -169,6 +172,7 @@ mod erc4626 {
         /// call by the receiver.
         #[ink(message)]
         pub fn preview_mint(&self, shares: Balance) -> Balance {
+            // @dev You can change this function to change the calculation of minting
             self.convert_to_assets(shares)
         }
 
@@ -184,8 +188,7 @@ mod erc4626 {
         /// Allows users to simulate the effects of their withdrawal at the current block.
         #[ink(message)]
         pub fn preview_withdraw(&self, assets: Balance) -> Balance {
-            // @dev You can change this function to change the maximum amount of assets
-            // that can be withdrawn at a time
+            // @dev You can change this function to change the calculation of withdrawing
             self.convert_to_shares(assets)
         }
 
@@ -194,15 +197,14 @@ mod erc4626 {
         #[ink(message)]
         pub fn max_redeem(&self, _owner: AccountId) -> Balance {
             // @dev You can change this function to change the maximum amount of assets
-            // that can be withdrawn at a time
+            // that can be redeemed at a time
             Balance::from(u128::MAX)
         }
 
         /// Allows users to simulate the effects of their redemption at the current block.
         #[ink(message)]
         pub fn preview_redeem(&self, shares: Balance) -> Balance {
-            // @dev You can change this function to change the maximum amount of assets
-            // that can be withdrawn at a time
+            // @dev You can change this function to change the calculation of redeeming
             self.convert_to_shares(shares)
         }
 
