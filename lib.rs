@@ -16,7 +16,7 @@ ink-examples repository.
 
 #[ink::contract]
 mod erc4626 {
-    use ink::{storage::Mapping};
+    use ink::storage::Mapping;
 
     /// A simple ERC-20 contract.
     #[ink(storage)]
@@ -59,7 +59,7 @@ mod erc4626 {
         sender: AccountId,
         owner: AccountId,
         assets: Balance,
-        shares: Balance
+        shares: Balance,
     }
 
     #[ink(event)]
@@ -68,7 +68,7 @@ mod erc4626 {
         receiver: AccountId,
         owner: AccountId,
         assets: Balance,
-        shares: Balance
+        shares: Balance,
     }
 
     /// The ERC-20 error types.
@@ -86,7 +86,7 @@ mod erc4626 {
         /// Returned when withdrawing, and the withdrawl is too high.
         ExceededMaxWithdraw,
         /// Returned when redeeming, and the redeem is too high.
-        ExceededMaxRedeem
+        ExceededMaxRedeem,
     }
 
     /// The ERC-20 result type.
@@ -165,14 +165,14 @@ mod erc4626 {
             Balance::from(u128::MAX)
         }
 
-        /// Returns the maximum amount of shares that can be minted in a single mint 
+        /// Returns the maximum amount of shares that can be minted in a single mint
         /// call by the receiver.
         #[ink(message)]
         pub fn preview_mint(&self, shares: Balance) -> Balance {
             self.convert_to_assets(shares)
         }
 
-        /// Mints exactly shares vault shares to receiver by depositing assets of 
+        /// Mints exactly shares vault shares to receiver by depositing assets of
         /// underlying tokens.
         #[ink(message)]
         pub fn max_withdraw(&self, _owner: AccountId) -> Balance {
@@ -189,7 +189,7 @@ mod erc4626 {
             self.convert_to_shares(assets)
         }
 
-        /// Returns the maximum amount of shares that can be redeemed from the owner balance 
+        /// Returns the maximum amount of shares that can be redeemed from the owner balance
         /// through a redeem call.
         #[ink(message)]
         pub fn max_redeem(&self, _owner: AccountId) -> Balance {
@@ -268,6 +268,54 @@ mod erc4626 {
             self.allowances.get((owner, spender)).unwrap_or_default()
         }
 
+        #[inline]
+        fn real_deposit(
+            &mut self,
+            caller: AccountId,
+            receiver: AccountId,
+            assets: Balance,
+            shares: Balance,
+        ) -> Result<()> {
+            // @dev Must implement the transfer of vaulted asset to this address (vault)
+
+            // TODO: mint(receiver, shares)
+
+            self.env().emit_event(Deposit {
+                sender: self.env().caller(),
+                owner: receiver,
+                assets,
+                shares,
+            });
+            Ok(())
+        }
+
+        #[inline]
+        fn real_withdraw(
+            &mut self,
+            caller: AccountId,
+            receiver: AccountId,
+            owner: AccountId,
+            assets: Balance,
+            shares: Balance,
+        ) -> Result<()> {
+            if caller != owner {
+                // TODO: spend allowance
+            }
+
+            // TODO: burn(owner, shares)
+
+            // @dev Must implement the transfer of valuted asset to the receiver
+
+            self.env().emit_event(Withdraw {
+                sender: caller,
+                receiver,
+                owner,
+                assets,
+                shares,
+            });
+            Ok(())
+        }
+
         // endregion
 
         /// Deposits assets of underlying tokens into the vault and grants ownership of shares to receiver.
@@ -278,17 +326,7 @@ mod erc4626 {
             }
 
             let shares = self.preview_deposit(assets);
-
-            // @dev Must make the asset you are storing transfer tokens from A to B
-            // TODO: mint(receiver, shares);
-
-            self.env().emit_event(Deposit {
-                sender: self.env().caller(),
-                owner: receiver,
-                assets,
-                shares,
-            });
-
+            self.real_deposit(self.env().caller(), receiver, assets, shares)?;
             Ok(())
         }
 
@@ -299,30 +337,41 @@ mod erc4626 {
             }
 
             let assets = self.preview_mint(shares);
-
-            // @dev Must make the asset you are storing transfer tokens from A to B
-            // TODO: mint(receiver, shares);
-
-            self.env().emit_event(Deposit {
-                sender: self.env().caller(),
-                owner: receiver,
-                assets,
-                shares,
-            });   
-            Ok(())     
+            self.real_deposit(self.env().caller(), receiver, assets, shares)?;
+            Ok(())
         }
 
         /// Burns shares from owner and send exactly assets token from the vault to receiver.
         #[ink(message)]
-        pub fn withdraw(&mut self, assets: Balance, receiver: AccountId, owner: AccountId) -> Result<()> {
+        pub fn withdraw(
+            &mut self,
+            assets: Balance,
+            receiver: AccountId,
+            owner: AccountId,
+        ) -> Result<()> {
             if assets > self.max_deposit(owner) {
-                return Err(Error::ExceededMaxWithdraw)
+                return Err(Error::ExceededMaxWithdraw);
             }
 
             let shares = self.preview_withdraw(assets);
-            
-            // TODO: implement withdraw
+            self.real_withdraw(self.env().caller(), receiver, owner, assets, shares)?;
+            Ok(())
+        }
 
+        /// Burns shares from owner and send exactly assets token from the vault to receiver.
+        #[ink(message)]
+        pub fn redeem(
+            &mut self,
+            shares: Balance,
+            receiver: AccountId,
+            owner: AccountId,
+        ) -> Result<()> {
+            if shares > self.max_redeem(owner) {
+                return Err(Error::ExceededMaxWithdraw);
+            }
+
+            let assets = self.preview_redeem(shares);
+            self.real_withdraw(self.env().caller(), receiver, owner, assets, shares)?;
             Ok(())
         }
 

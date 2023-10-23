@@ -1,5 +1,5 @@
 [package]
-name = "ERC4626"
+name = "erc_4626"
 version = "0.1.0"
 authors = ["Jeremy Boetticher"]
 edition = "2021"
