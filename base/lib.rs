@@ -278,7 +278,9 @@ mod erc4626 {
         ) -> Result<()> {
             // @dev Must implement the transfer of vaulted asset to this address (vault)
 
-            // TODO: mint(receiver, shares)
+            // Mint
+            let cur = self.balances.get(receiver).unwrap_or(0);
+            self.balances.insert(receiver, &(cur + shares));
 
             self.env().emit_event(Deposit {
                 sender: self.env().caller(),
@@ -298,11 +300,22 @@ mod erc4626 {
             assets: Balance,
             shares: Balance,
         ) -> Result<()> {
+            // Spend allowance if necessary
             if caller != owner {
-                // TODO: spend allowance
+                let allowance = self.allowance_impl(&owner, &caller);
+                if allowance < shares {
+                    return Err(Error::InsufficientAllowance);
+                }
+                self.allowances
+                    .insert((&owner, &caller), &(allowance - shares));
             }
 
-            // TODO: burn(owner, shares)
+            // Burn
+            let cur = self.balances.get(receiver).unwrap_or(0);
+            if cur < shares {
+                return Err(Error::InsufficientBalance);
+            }
+            self.balances.insert(receiver, &(cur - shares));
 
             // @dev Must implement the transfer of valuted asset to the receiver
 

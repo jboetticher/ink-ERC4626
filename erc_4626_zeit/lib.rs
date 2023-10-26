@@ -1,5 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+// TODO: use Zeitgeist balances instead
+use ink::primitives::AccountId;
+use sp_runtime::MultiAddress;
+
 /*
 
 An implementation of ERC4626, a standardization of minting, burning, and redeeming a token
@@ -17,13 +21,12 @@ ink-examples repository.
 #[ink::contract]
 mod erc4626_20 {
     use ink::storage::Mapping;
-    use erc20::Erc20Ref;
+    use ink::env::Error as EnvError;
 
     /// A simple ERC-20 contract.
     #[ink(storage)]
-    #[derive(Default)]
     pub struct Erc4626 {
-        vault_token: Erc20Ref,
+        // vault_token: Erc20Ref,
         /// Total token supply.
         total_supply: Balance,
         /// Mapping from owner to number of owned token.
@@ -58,7 +61,9 @@ mod erc4626_20 {
 
     #[ink(event)]
     pub struct Deposit {
+        #[ink(topic)]
         sender: AccountId,
+        #[ink(topic)]
         owner: AccountId,
         assets: Balance,
         shares: Balance,
@@ -66,17 +71,20 @@ mod erc4626_20 {
 
     #[ink(event)]
     pub struct Withdraw {
+        #[ink(topic)]
         sender: AccountId,
+        #[ink(topic)]
         receiver: AccountId,
+        #[ink(topic)]
         owner: AccountId,
         assets: Balance,
         shares: Balance,
     }
 
-    /// The ERC-20 error types.
+    /// The ERC-20 ErcError types.
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
-    pub enum Error {
+    pub enum ErcError {
         /// Returned if not enough balance to fulfill a request is available.
         InsufficientBalance,
         /// Returned if not enough allowance to fulfill a request is available.
@@ -89,10 +97,20 @@ mod erc4626_20 {
         ExceededMaxWithdraw,
         /// Returned when redeeming, and the redeem is too high.
         ExceededMaxRedeem,
+        CallRuntimeFailed
+    }
+
+    impl From<EnvError> for ErcError {
+        fn from(e: EnvError) -> Self {
+            match e {
+                EnvError::CallRuntimeFailed => ErcError::CallRuntimeFailed,
+                _ => panic!("Unexpected ErcError from `pallet-contracts`."),
+            }
+        }
     }
 
     /// The ERC-20 result type.
-    pub type Result<T> = core::result::Result<T, Error>;
+    pub type Result<T> = core::result::Result<T, ErcError>;
 
     impl Erc4626 {
         /// Creates a new ERC-20 contract with the specified initial supply.
@@ -111,22 +129,22 @@ mod erc4626_20 {
                 balances,
                 decimals,
                 allowances: Default::default(),
+                // vault_token: vaulted
             }
         }
 
         // region: Read Only
 
-        // @dev Replace with the address/multilocation of the underlying token
+        // The address/multilocation of the underlying token
         // used for the vault for accounting, depositing, withdrawing.
         #[ink(message)]
-        pub fn asset(&self) {
-            todo!();
+        pub fn asset(&self) -> crate::ZeitgeistAsset {
+            crate::ZeitgeistAsset::Ztg
         }
 
-        // @dev Replace with the total amount of underlying assets held by the vault.
         #[ink(message)]
-        pub fn total_assets(&self) {
-            todo!();
+        pub fn total_assets(&self) -> Balance {
+            self.env().balance()
         }
 
         /// Returns the amount of shares that would be exchanged by the vault for the
@@ -273,14 +291,16 @@ mod erc4626_20 {
         #[inline]
         fn real_deposit(
             &mut self,
-            caller: AccountId,
+            _caller: AccountId,
             receiver: AccountId,
             assets: Balance,
             shares: Balance,
         ) -> Result<()> {
             // @dev Must implement the transfer of vaulted asset to this address (vault)
 
-            // TODO: mint(receiver, shares)
+            // Mint
+            let cur = self.balances.get(receiver).unwrap_or(0);
+            self.balances.insert(receiver, &(cur + shares));
 
             self.env().emit_event(Deposit {
                 sender: self.env().caller(),
@@ -291,7 +311,6 @@ mod erc4626_20 {
             Ok(())
         }
 
-        #[inline]
         fn real_withdraw(
             &mut self,
             caller: AccountId,
@@ -300,13 +319,33 @@ mod erc4626_20 {
             assets: Balance,
             shares: Balance,
         ) -> Result<()> {
+            // Spend allowance if necessary
             if caller != owner {
-                // TODO: spend allowance
+                let allowance = self.allowance_impl(&owner, &caller);
+                if allowance < shares {
+                    return Err(ErcError::InsufficientAllowance);
+                }
+                self.allowances
+                    .insert((&owner, &caller), &(allowance - shares));
             }
 
-            // TODO: burn(owner, shares)
+            // Burn
+            let cur = self.balances.get(receiver).unwrap_or(0);
+            if cur < shares {
+                return Err(ErcError::InsufficientBalance);
+            }
+            self.balances.insert(receiver, &(cur - shares));
 
             // @dev Must implement the transfer of valuted asset to the receiver
+            self.env()
+                .call_runtime(&crate::RuntimeCall::AssetManager(
+                    crate::AssetManagerCall::Transfer {
+                        dest: self.env().caller().into(),
+                        currency_id: crate::ZeitgeistAsset::Ztg,
+                        amount: assets,
+                    },
+                ))
+                .map_err(Into::<ErcError>::into)?;
 
             self.env().emit_event(Withdraw {
                 sender: caller,
@@ -321,10 +360,10 @@ mod erc4626_20 {
         // endregion
 
         /// Deposits assets of underlying tokens into the vault and grants ownership of shares to receiver.
-        #[ink(message)]
+        #[ink(message, payable)]
         pub fn deposit(&mut self, assets: Balance, receiver: AccountId) -> Result<()> {
             if assets > self.max_deposit(self.env().caller()) {
-                return Err(Error::ExceededMaxDeposit);
+                return Err(ErcError::ExceededMaxDeposit);
             }
 
             let shares = self.preview_deposit(assets);
@@ -332,10 +371,10 @@ mod erc4626_20 {
             Ok(())
         }
 
-        #[ink(message)]
+        #[ink(message, payable)]
         pub fn mint(&mut self, shares: Balance, receiver: AccountId) -> Result<()> {
             if shares > self.max_mint(receiver) {
-                return Err(Error::ExceededMaxMint);
+                return Err(ErcError::ExceededMaxMint);
             }
 
             let assets = self.preview_mint(shares);
@@ -352,7 +391,7 @@ mod erc4626_20 {
             owner: AccountId,
         ) -> Result<()> {
             if assets > self.max_deposit(owner) {
-                return Err(Error::ExceededMaxWithdraw);
+                return Err(ErcError::ExceededMaxWithdraw);
             }
 
             let shares = self.preview_withdraw(assets);
@@ -369,7 +408,7 @@ mod erc4626_20 {
             owner: AccountId,
         ) -> Result<()> {
             if shares > self.max_redeem(owner) {
-                return Err(Error::ExceededMaxWithdraw);
+                return Err(ErcError::ExceededMaxWithdraw);
             }
 
             let assets = self.preview_redeem(shares);
@@ -383,7 +422,7 @@ mod erc4626_20 {
         ///
         /// # Errors
         ///
-        /// Returns `InsufficientBalance` error if there are not enough tokens on
+        /// Returns `InsufficientBalance` ErcError if there are not enough tokens on
         /// the caller's account balance.
         #[ink(message)]
         pub fn transfer(&mut self, to: AccountId, value: Balance) -> Result<()> {
@@ -419,10 +458,10 @@ mod erc4626_20 {
         ///
         /// # Errors
         ///
-        /// Returns `InsufficientAllowance` error if there are not enough tokens allowed
+        /// Returns `InsufficientAllowance` ErcError if there are not enough tokens allowed
         /// for the caller to withdraw from `from`.
         ///
-        /// Returns `InsufficientBalance` error if there are not enough tokens on
+        /// Returns `InsufficientBalance` ErcError if there are not enough tokens on
         /// the account balance of `from`.
         #[ink(message)]
         pub fn transfer_from(
@@ -434,7 +473,7 @@ mod erc4626_20 {
             let caller = self.env().caller();
             let allowance = self.allowance_impl(&from, &caller);
             if allowance < value {
-                return Err(Error::InsufficientAllowance);
+                return Err(ErcError::InsufficientAllowance);
             }
             self.transfer_from_to(&from, &to, value)?;
             self.allowances
@@ -448,7 +487,7 @@ mod erc4626_20 {
         ///
         /// # Errors
         ///
-        /// Returns `InsufficientBalance` error if there are not enough tokens on
+        /// Returns `InsufficientBalance` ErcError if there are not enough tokens on
         /// the caller's account balance.
         fn transfer_from_to(
             &mut self,
@@ -458,7 +497,7 @@ mod erc4626_20 {
         ) -> Result<()> {
             let from_balance = self.balance_of_impl(from);
             if from_balance < value {
-                return Err(Error::InsufficientBalance);
+                return Err(ErcError::InsufficientBalance);
             }
 
             self.balances.insert(from, &(from_balance - value));
@@ -661,7 +700,7 @@ mod erc4626_20 {
             // Bob fails to transfers 10 tokens to Eve.
             assert_eq!(
                 erc20.transfer(accounts.eve, 10),
-                Err(Error::InsufficientBalance)
+                Err(ErcError::InsufficientBalance)
             );
             // Alice owns all the tokens.
             assert_eq!(erc20.balance_of(accounts.alice), 100);
@@ -689,7 +728,7 @@ mod erc4626_20 {
             // Bob fails to transfer tokens owned by Alice.
             assert_eq!(
                 erc20.transfer_from(accounts.alice, accounts.eve, 10),
-                Err(Error::InsufficientAllowance)
+                Err(ErcError::InsufficientAllowance)
             );
             // Alice approves Bob for token transfers on her behalf.
             assert_eq!(erc20.approve(accounts.bob, 10), Ok(()));
@@ -748,7 +787,7 @@ mod erc4626_20 {
             let emitted_events_before = ink::env::test::recorded_events().count();
             assert_eq!(
                 erc20.transfer_from(accounts.alice, accounts.eve, alice_balance + 1),
-                Err(Error::InsufficientBalance)
+                Err(ErcError::InsufficientBalance)
             );
             // Allowance must have stayed the same
             assert_eq!(
@@ -813,7 +852,7 @@ mod erc4626_20 {
     mod e2e_tests {
         use super::*;
         use ink_e2e::build_message;
-        type E2EResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+        type E2EResult<T> = std::result::Result<T, Box<dyn std::ErcError::ErcError>>;
 
         #[ink_e2e::test]
         async fn e2e_transfer(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
@@ -935,4 +974,38 @@ mod erc4626_20 {
             Ok(())
         }
     }
+}
+
+#[derive(scale::Encode, scale::Decode)]pub enum RuntimeCall {
+    /// This index can be found by investigating runtime configuration. You can check the
+    /// pallet order inside `construct_runtime!` block and read the position of your
+    /// pallet (0-based).
+    ///
+    /// https://github.com/zeitgeistpm/zeitgeist/blob/3d9bbff91219bb324f047427224ee318061a6d43/runtime/common/src/lib.rs#L254-L363
+    ///
+    /// [See here for more.](https://substrate.stackexchange.com/questions/778/how-to-get-pallet-index-u8-of-a-pallet-in-runtime)
+    #[codec(index = 40)]
+    AssetManager(AssetManagerCall),
+}
+
+#[derive(scale::Encode, scale::Decode, )]
+pub enum AssetManagerCall {
+    // https://github.com/open-web3-stack/open-runtime-module-library/blob/22a4f7b7d1066c1a138222f4546d527d32aa4047/currencies/src/lib.rs#L129-L131C19
+    #[codec(index = 0)]
+    Transfer {
+        dest: MultiAddress<AccountId, ()>,
+        currency_id: ZeitgeistAsset,
+        #[codec(compact)]
+        amount: u128,
+    },
+}
+
+#[derive(scale::Encode, scale::Decode, Clone, PartialEq)]
+pub enum ZeitgeistAsset {
+    CategoricalOutcome, //(MI, CategoryIndex),
+    ScalarOutcome,      //(MI, ScalarPosition),
+    CombinatorialOutcome,
+    PoolShare, //(SerdeWrapper<PoolId>),
+    Ztg,       // default
+    ForeignAsset(u32),
 }
