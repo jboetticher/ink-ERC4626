@@ -115,7 +115,7 @@ mod erc4626_20 {
     impl Erc4626 {
         /// Creates a new ERC-20 contract with the specified initial supply.
         #[ink(constructor)]
-        pub fn new(total_supply: Balance, decimals: u8) -> Self {
+        pub fn new(total_supply: Balance) -> Self {
             let mut balances = Mapping::default();
             let caller = Self::env().caller();
             balances.insert(caller, &total_supply);
@@ -127,7 +127,7 @@ mod erc4626_20 {
             Self {
                 total_supply,
                 balances,
-                decimals,
+                decimals: 10,         // Decimals is 10 because ZTG is 10
                 allowances: Default::default(),
                 // vault_token: vaulted
             }
@@ -223,7 +223,7 @@ mod erc4626_20 {
         #[ink(message)]
         pub fn preview_redeem(&self, shares: Balance) -> Balance {
             // @dev You can change this function to change the calculation of redeeming
-            self.convert_to_shares(shares)
+            self.convert_to_assets(shares)
         }
 
         /// Returns the total token supply.
@@ -247,7 +247,8 @@ mod erc4626_20 {
 
         /// Returns the decimal offset that this asset represents
         pub fn decimal_offset(&self) -> u8 {
-            0
+            // @dev Change this to increase the ratio of tokens to ZTG
+            1
         }
 
         /// Returns the amount which `spender` is still allowed to withdraw from `owner`.
@@ -301,6 +302,7 @@ mod erc4626_20 {
             // Mint
             let cur = self.balances.get(receiver).unwrap_or(0);
             self.balances.insert(receiver, &(cur + shares));
+            self.total_supply += shares;
 
             self.env().emit_event(Deposit {
                 sender: self.env().caller(),
@@ -330,17 +332,18 @@ mod erc4626_20 {
             }
 
             // Burn
-            let cur = self.balances.get(receiver).unwrap_or(0);
+            let cur = self.balances.get(owner).unwrap_or(0);
             if cur < shares {
                 return Err(ErcError::InsufficientBalance);
             }
-            self.balances.insert(receiver, &(cur - shares));
+            self.balances.insert(owner, &(cur - shares));
+            self.total_supply -= shares;
 
             // @dev Must implement the transfer of valuted asset to the receiver
             self.env()
                 .call_runtime(&crate::RuntimeCall::AssetManager(
                     crate::AssetManagerCall::Transfer {
-                        dest: self.env().caller().into(),
+                        dest: receiver.into(),
                         currency_id: crate::ZeitgeistAsset::Ztg,
                         amount: assets,
                     },
@@ -366,6 +369,11 @@ mod erc4626_20 {
                 return Err(ErcError::ExceededMaxDeposit);
             }
 
+            // Ensures that value is being transferred into the account
+            if assets != self.env().transferred_value() {
+                return Err(ErcError::InsufficientAllowance);
+            }
+
             let shares = self.preview_deposit(assets);
             self.real_deposit(self.env().caller(), receiver, assets, shares)?;
             Ok(())
@@ -378,6 +386,12 @@ mod erc4626_20 {
             }
 
             let assets = self.preview_mint(shares);
+
+            // Ensures that value is being transferred into the smart contract
+            if assets != self.env().transferred_value() {
+                return Err(ErcError::InsufficientAllowance);
+            }
+
             self.real_deposit(self.env().caller(), receiver, assets, shares)?;
             Ok(())
         }
@@ -1000,7 +1014,11 @@ pub enum AssetManagerCall {
     },
 }
 
-#[derive(scale::Encode, scale::Decode, Clone, PartialEq)]
+#[derive(Debug, Clone, scale::Decode, scale::Encode)]
+#[cfg_attr(
+    feature = "std",
+    derive(scale_info::TypeInfo)
+)]
 pub enum ZeitgeistAsset {
     CategoricalOutcome, //(MI, CategoryIndex),
     ScalarOutcome,      //(MI, ScalarPosition),
